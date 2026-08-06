@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stored users — file DB viewer</title>
+<style>
+  :root{
+    --bg:#0e0e10; --panel:#17171a; --border:#2a2a2e;
+    --text:#f2f2f2; --muted:#9a9aa0; --accent:#0095f6;
+    --ok:#00c853; --warn:#ff5252; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  *{ box-sizing:border-box; }
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    padding:32px 20px 60px;
+  }
+  .wrap{ max-width:960px; margin:0 auto; }
+  header{ display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:10px; margin-bottom:6px; }
+  h1{ font-size:22px; font-weight:700; }
+  h2{ font-size:15px; font-weight:600; margin:28px 0 12px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  .path{ font-family:var(--mono); font-size:12px; color:var(--muted); margin-bottom:24px; word-break:break-all; }
+  .toolbar{ display:flex; align-items:center; gap:12px; margin-bottom:20px; flex-wrap:wrap; }
+  .count-pill{
+    background:var(--panel); border:1px solid var(--border); border-radius:999px;
+    padding:6px 14px; font-size:13px; color:var(--muted);
+  }
+  .count-pill b{ color:var(--text); }
+  button{
+    background:var(--accent); color:#fff; border:none; border-radius:8px;
+    padding:9px 16px; font-size:14px; font-weight:600; cursor:pointer;
+  }
+  button:hover{ opacity:.9; }
+  button.secondary{ background:transparent; border:1px solid var(--border); color:var(--text); }
+  table{ width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--border); border-radius:12px; overflow:hidden; }
+  thead th{
+    text-align:left; font-size:12px; text-transform:uppercase; letter-spacing:.04em;
+    color:var(--muted); padding:12px 14px; border-bottom:1px solid var(--border);
+  }
+  tbody td{ padding:12px 14px; border-bottom:1px solid var(--border); font-size:14px; }
+  tbody tr:last-child td{ border-bottom:none; }
+  tbody tr:hover{ background:rgba(255,255,255,0.02); }
+  .mono{ font-family:var(--mono); font-size:12.5px; color:var(--muted); }
+  .empty{ text-align:center; padding:48px 20px; color:var(--muted); }
+  .status{ font-size:12px; color:var(--muted); margin-top:16px; }
+  .status.live::before{ content:"● "; color:var(--ok); }
+  .badge{ display:inline-block; padding:2px 9px; border-radius:999px; font-size:12px; font-weight:600; }
+  .badge.ok{ background:rgba(0,200,83,.12); color:var(--ok); }
+  .badge.bad{ background:rgba(255,82,82,.12); color:var(--warn); }
+  .expand-btn{
+    background:transparent; border:1px solid var(--border); color:var(--accent);
+    padding:4px 10px; font-size:12px; font-weight:600; border-radius:6px;
+  }
+  .attempts-row td{ padding:0; }
+  .attempts-panel{ display:none; padding:12px 14px 16px; background:rgba(255,255,255,.015); }
+  .attempts-panel.open{ display:table-cell; }
+  .attempts-panel table{ border-radius:8px; }
+  .attempts-panel thead th{ font-size:11px; }
+  .attempts-panel td{ padding:8px 12px; font-size:13px; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Stored users</h1>
+      <div class="toolbar">
+        <button class="secondary" id="refreshBtn">Refresh</button>
+        <a href="/reset-password" style="text-decoration:none;"><button>Go to reset form</button></a>
+      </div>
+    </header>
+    <p class="path" id="dbPath">Loading database path…</p>
+
+    <div class="toolbar">
+      <span class="count-pill"><b id="countNum">0</b> record(s)</span>
+    </div>
+
+    <div id="tableHolder">
+      <table id="usersTable" style="display:none;">
+        <thead>
+          <tr>
+            <th>ID</th><th>Username</th><th>Email</th><th>Created</th>
+            <th>Session v.</th><th>Password</th><th>Change attempts</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="usersBody"></tbody>
+      </table>
+      <div class="empty" id="emptyState">No users yet — submit the reset form or register a user to see data here.</div>
+    </div>
+
+    <p class="status" id="statusLine"></p>
+  </div>
+
+<script>
+  // Pulls from /api/admin/users, which reads straight from the JSON
+  // file DB on disk. Each user record also carries an attempt log
+  // (old + new password tried, whether the old one was correct, and
+  // when) so you can see every password-change attempt made.
+
+  const dbPath      = document.getElementById('dbPath');
+  const countNum     = document.getElementById('countNum');
+  const usersTable   = document.getElementById('usersTable');
+  const usersBody    = document.getElementById('usersBody');
+  const emptyState   = document.getElementById('emptyState');
+  const statusLine   = document.getElementById('statusLine');
+  const refreshBtn   = document.getElementById('refreshBtn');
+
+  function fmtDate(iso) {
+    if (!iso) return '—';
+    try { return new Date(iso).toLocaleString(); } catch { return iso; }
+  }
+
+  function attemptsTable(attempts) {
+    if (!attempts || attempts.length === 0) {
+      return '<div style="color:var(--muted); font-size:13px; padding:6px 2px;">No attempts recorded yet.</div>';
+    }
+    const rows = attempts.slice().reverse().map(a => `
+      <tr>
+        <td class="mono">${fmtDate(a.timestamp)}</td>
+        <td class="mono">${a.old_password ?? '—'}</td>
+        <td class="mono">${a.new_password ?? '—'}</td>
+        <td>${a.old_correct
+              ? '<span class="badge ok">old pw correct</span>'
+              : '<span class="badge bad">old pw wrong</span>'}</td>
+      </tr>
+    `).join('');
+    return `
+      <table>
+        <thead>
+          <tr><th>When</th><th>Old password tried</th><th>New password tried</th><th>Result</th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+  }
+
+  async function loadUsers() {
+    statusLine.textContent = 'Loading…';
+    statusLine.classList.remove('live');
+    try {
+      const res = await fetch('/api/admin/users', { credentials: 'include' });
+      const data = await res.json();
+
+      dbPath.textContent = 'File DB: ' + data.db_path;
+      countNum.textContent = data.count;
+
+      usersBody.innerHTML = '';
+      if (data.count === 0) {
+        usersTable.style.display = 'none';
+        emptyState.style.display = 'block';
+      } else {
+        usersTable.style.display = 'table';
+        emptyState.style.display = 'none';
+        data.users.forEach((u, idx) => {
+          const panelId = 'attempts-' + u.id;
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td class="mono">${u.id}</td>
+            <td>${u.username}</td>
+            <td>${u.email}</td>
+            <td>${fmtDate(u.created_at)}</td>
+            <td>${u.session_version}</td>
+            <td class="mono">${u.password}</td>
+            <td class="mono">${u.attempt_count ?? 0}</td>
+            <td><button class="expand-btn" data-target="${panelId}">View</button></td>
+          `;
+          usersBody.appendChild(tr);
+
+          const panelRow = document.createElement('tr');
+          panelRow.className = 'attempts-row';
+          panelRow.innerHTML = `<td colspan="8"><div class="attempts-panel" id="${panelId}">${attemptsTable(u.password_attempts)}</div></td>`;
+          usersBody.appendChild(panelRow);
+        });
+
+        usersBody.querySelectorAll('.expand-btn').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const panel = document.getElementById(btn.dataset.target);
+            panel.classList.toggle('open');
+            btn.textContent = panel.classList.contains('open') ? 'Hide' : 'View';
+          });
+        });
+      }
+      statusLine.textContent = 'Last updated ' + new Date().toLocaleTimeString();
+      statusLine.classList.add('live');
+    } catch (err) {
+      statusLine.textContent = 'Could not load — is the Flask server running?';
+    }
+  }
+
+  refreshBtn.addEventListener('click', loadUsers);
+  loadUsers();
+</script>
+</body>
+</html>
