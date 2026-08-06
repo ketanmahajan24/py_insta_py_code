@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+venv/
+backend/venv/
+
+# Environment variables
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# Session files
+session.json
+
+# OS
+.DS_Store
+Thumbs.db
