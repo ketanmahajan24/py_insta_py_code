@@ -355,6 +355,5 @@ def admin_users_json():
     users.sort(key=lambda u: int(u["id"]))
     return jsonify(users=users, db_path=userdetails.DB_PATH, count=len(users))
 
-
 if __name__ == "__main__":
-    app.run(debug=True, port=8090)
+    app.run(debug=True, host="0.0.0.0", port=8090)
